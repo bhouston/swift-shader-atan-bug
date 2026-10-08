@@ -7,10 +7,10 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "vitest run --project swiftshader --project webgpu",
+    "test": "vitest run --project swiftshader --project webgpu-swiftshader --project webgpu",
     "test:webgl": "vitest run --project swiftshader",
-    "test:webgpu": "vitest run --project webgpu",
-    "test:controls": "vitest run --project swiftshader --project webgpu -t control",
+    "test:webgpu": "vitest run --project webgpu-swiftshader --project webgpu",
+    "test:controls": "vitest run --project swiftshader --project webgpu-swiftshader --project webgpu -t control",
     "test:hardware": "vitest run --project hardware --project webgpu"
   },
   "devDependencies": {

@@ -1,9 +1,13 @@
-# SwiftShader `atan` selects the wrong quadrant for runtime negative zero
+# SwiftShader GLSL `atan` and WGSL `atan2` select the wrong quadrant for runtime negative zero
 
-On Chromium's **ANGLE + Vulkan SwiftShader** WebGL2 path, GLSL `atan(y, x)`
+Both Chromium's **WebGL2 (GLSL)** and **WebGPU (WGSL)** backends are affected
+when they use SwiftShader. On the **ANGLE + Vulkan SwiftShader** WebGL2 path, GLSL `atan(y, x)`
 selects the wrong quadrant when **`y` is runtime negative zero**: positive
 `x` returns `3.1415927410125732` instead of zero, and negative `x` returns
 zero instead of ±π. Constant expressions pass.
+
+WGSL `atan2(y, x)` produces the same errors on forced SwiftShader WebGPU,
+without ANGLE or Three.js shader generation. The native WebGPU control passes.
 
 | Runtime call | Correct result | SwiftShader result |
 | --- | --- | --- |
@@ -26,7 +30,7 @@ WebGL2 and WebGPU on both machines return the correct result.
 
 The negative-x error was additionally verified on Apple M3 with Chromium
 156 and in a direct SwiftShader Vulkan test. The expanded negative-x browser
-cases have not yet been rerun on Windows.
+cases now also reproduce on Windows x64 with Playwright Chromium 156.
 
 ## Affected versions
 
@@ -101,8 +105,9 @@ own Chromium with its own flags.
 ```sh
 npm ci
 npx playwright install chromium
-npm test                # M3 Chromium 156: 4 failures, 9 passes on the affected build
-npm run test:hardware   # native M3 WebGL + native WebGPU; all 13 pass
+npm test                # SwiftShader WebGL + SwiftShader WebGPU + native WebGPU
+npm run test:webgpu     # forced SwiftShader and native WGSL comparisons
+npm run test:hardware   # native WebGL + native WebGPU
 npm run test:controls   # controls only
 ```
 
@@ -110,7 +115,34 @@ The tests always assert the correct result, so `npm test` fails until the bug
 is fixed. The `swiftshader` project uses
 `--use-angle=swiftshader --enable-unsafe-swiftshader` and checks that the
 renderer is SwiftShader. The `hardware` project fails if the browser falls back
-to SwiftShader.
+to SwiftShader. The `webgpu-swiftshader` project forces software WebGPU using
+`--enable-unsafe-webgpu --use-webgpu-adapter=swiftshader` and verifies the
+adapter identity. The `webgpu` project requires a native adapter.
+
+## WGSL reproduction
+
+[`shaders/atan-negative-zero.wgsl`](shaders/atan-negative-zero.wgsl) derives
+negative zero from the runtime compute invocation ID and calls `atan2`.
+[`test/webgpu.test.js`](test/webgpu.test.js) tests denominators `1`, `2^-126`,
+`-1`, and `-2^-126`, checks that the runtime input has bits `0x80000000`,
+and tests zero canonicalization for each denominator:
+
+```wgsl
+atan2(select(y, 0.0, y == 0.0), x)
+```
+
+On Windows x64 with Playwright Chromium 156 and SwiftShader/Subzero,
+`npm run test:webgpu` reports **4 expected failures and 16 passes**: all four
+uncorrected calls fail on software WebGPU, its six controls pass, and all
+ten native NVIDIA WebGPU tests pass. Tests assert the correct mathematical
+result, so the reproduction intentionally exits with a failure on affected builds.
+
+The combined `npm test` run on that Windows system reports 10 failures and
+21 passes: six WebGL failures and four WGSL failures. The existing WebGL
+positive/negative-x control sweeps each include a negative subnormal that
+Subzero flushes to negative zero, so `npm run test:controls` also has those
+two known failures (17 passes). All six WGSL software controls pass.
+`npm run test:hardware` passes all 21 tests.
 
 ## Input sweep
 
@@ -128,7 +160,7 @@ finite value. It tests both positive and negative `x`, paired with these `y` val
   - **Exception:** on Windows (Subzero), `y = -2^-149` also fails for all 257
     `x` values. Subzero flushes that subnormal to `-0`, which triggers the same
     bug. The previous positive-x suite reported 3 failures on Windows;
-    the expanded suite has not yet been rerun there.
+    the expanded Windows suite now confirms this for both signs of `x`.
 
 Angle comparisons account for the ±π branch cut, including allowed zero-sign
 changes and subnormal flushing. Each negative-zero sweep also reports the
@@ -138,6 +170,9 @@ number of verified `0x80000000` input bit patterns.
 
 - For **positive `x`** only: `atan(y / x)`.
 - Canonicalize the zero before the call: `atan(y == 0.0 ? 0.0 : y, x)`.
+
+For WGSL, use `atan(y / x)` only for positive `x`, or
+`atan2(select(y, 0.0, y == 0.0), x)` for either sign of `x`.
 
 The zero-canonicalization workaround is tested for both signs of `x`.
 The quotient workaround does not fix the negative-x case because it loses

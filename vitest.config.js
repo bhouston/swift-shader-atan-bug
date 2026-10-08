@@ -21,7 +21,9 @@ export default defineConfig({
         chromium('swiftshader', ['test/webgl.test.js'],
           ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'], { backend: 'swiftshader' }),
         chromium('hardware', ['test/webgl.test.js'], ['--ignore-gpu-blocklist'], { backend: 'hardware' }),
-        chromium('webgpu', ['test/webgpu.test.js'], ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'])
+        chromium('webgpu', ['test/webgpu.test.js'], ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'], { backend: 'hardware' }),
+        chromium('webgpu-swiftshader', ['test/webgpu.test.js'],
+          ['--enable-unsafe-webgpu', '--use-webgpu-adapter=swiftshader'], { backend: 'swiftshader' })
       ]
     }
   }
