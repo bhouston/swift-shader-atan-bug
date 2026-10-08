@@ -10,16 +10,17 @@ WebGL2 and WebGPU on both machines return the correct result.
 
 ## Affected versions
 
-| Component | Version |
-| --- | --- |
-| Chrome for Testing | **154.0.8037.57** (macOS arm64, Windows x64) |
-| ANGLE | 2.1.28731, [`1ff8799c`](https://chromium.googlesource.com/angle/angle/+/1ff8799c596d4fc9acea28343610b1f33650a6fa) |
-| SwiftShader | [`5b0479bd`](https://swiftshader.googlesource.com/SwiftShader/+/5b0479bd2d15058aaa9eb490e364f920ff824a8c), Vulkan 1.3.0 |
-| SwiftShader JIT | LLVM 10.0.0 (macOS arm64), Subzero (Windows x64) |
+| Browser | ANGLE | SwiftShader | Tested on |
+| --- | --- | --- | --- |
+| Chrome for Testing **154.0.8037.57** | 2.1.28731, [`1ff8799c`](https://chromium.googlesource.com/angle/angle/+/1ff8799c596d4fc9acea28343610b1f33650a6fa) | [`5b0479bd`](https://swiftshader.googlesource.com/SwiftShader/+/5b0479bd2d15058aaa9eb490e364f920ff824a8c) | macOS arm64, Windows x64 |
+| Playwright Chromium **156.0.8078.4** | [`dfeede58`](https://chromium.googlesource.com/angle/angle/+/dfeede58b6183e8964ae4b6d9612fe1d579403e3) | [`1e80438d`](https://swiftshader.googlesource.com/SwiftShader/+/1e80438d2b93ef36a7c05f8d2b81233bac0e3d16) | Windows x64 |
 
-[This release's DEPS file](https://chromium.googlesource.com/chromium/src/+/154.0.8037.57/DEPS)
-pins these revisions. Both platforms use the same Chrome, ANGLE and SwiftShader
-revisions. Only SwiftShader's JIT backend differs, and it fails on both.
+Each release's DEPS file pins its ANGLE and SwiftShader revisions
+([154](https://chromium.googlesource.com/chromium/src/+/154.0.8037.57/DEPS),
+[156](https://chromium.googlesource.com/chromium/src/+/156.0.8078.4/DEPS)).
+SwiftShader reports Vulkan 1.3.0 in both. Its JIT backend differs by platform:
+LLVM 10.0.0 on macOS arm64 and Subzero on Windows x64. The bug reproduces with
+both backends. The test suite uses Playwright's Chromium 156.
 
 ## Minimal shader
 
