@@ -9,6 +9,9 @@ zero instead of ±π. Constant expressions pass.
 WGSL `atan2(y, x)` produces the same errors on forced SwiftShader WebGPU,
 without ANGLE or Three.js shader generation. The native WebGPU control passes.
 
+- **Official SwiftShader issue:** [571218887](https://issuetracker.google.com/issues/571218887).
+- **Proposed patch:** [SwiftShader Gerrit change 77868](https://swiftshader-review.googlesource.com/c/SwiftShader/+/77868).
+
 | Runtime call | Correct result | SwiftShader result |
 | --- | --- | --- |
 | `atan(-0, 1)` | `±0` | **`3.1415927`** (π) |
@@ -199,8 +202,10 @@ contains separate regression-test and fix commits. On macOS arm64/LLVM,
 and all 155 Vulkan unit tests pass afterward. Windows/Subzero validation
 of the fix remains outstanding.
 
-See [the contribution guide and submission drafts](SWIFTSHADER_CONTRIBUTION.md).
-No upstream review or bug report has been submitted.
+The bug is tracked in [SwiftShader issue 571218887](https://issuetracker.google.com/issues/571218887),
+with the proposed fix submitted as [Gerrit change 77868](https://swiftshader-review.googlesource.com/c/SwiftShader/+/77868).
+See [the contribution notes](SWIFTSHADER_CONTRIBUTION.md) for validation details
+and review follow-up.
 
 ## License
 
