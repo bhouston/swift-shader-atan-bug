@@ -4,6 +4,19 @@ On Chromium's **ANGLE + Vulkan SwiftShader** WebGL2 path, GLSL `atan(y, x)`
 returns `3.1415927410125732` instead of zero when **`y` is runtime negative zero
 and `x` is positive**. Constant expressions pass.
 
+| Runtime call | Correct result | SwiftShader result |
+| --- | --- | --- |
+| `atan(-0, 1)` | `±0` | **`3.1415927`** (π) |
+| `atan(-0, 2^-126)` | `±0` | **`3.1415927`** (π) |
+| `atan(-2^-149, 1)`* | `-1.4e-45` (or `±0` if flushed) | **`3.1415927`** (π) |
+| `atan(-2^-149, 2^-126)`* | `-1.1920929e-7` (`-2^-23`, or `±0` if flushed) | **`3.1415927`** (π) |
+
+\* Windows x64 (Subzero JIT) only. Subzero flushes the subnormal `-2^-149` to
+`-0`, which then triggers the same bug. macOS arm64 (LLVM JIT) returns the
+correct result for these two rows. GLSL allows either sign of zero, and
+flushing subnormals to zero is also allowed. Returning π is never correct when
+`x` is positive. The native GTX 1050 returns `0` for all four calls.
+
 The bug reproduces on both Apple M3 (macOS arm64) and AMD Ryzen 9 5950X +
 NVIDIA GTX 1050 (Windows x64), so it does not depend on the hardware. Native
 WebGL2 and WebGPU on both machines return the correct result.
