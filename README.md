@@ -1,146 +1,153 @@
-# SwiftShader two-argument `atan` reproduction
+# SwiftShader `atan` returns π for runtime negative zero
 
-Minimal, direct-shader reproduction of an incorrect cubemap solid-angle integral on
-Chromium's **ANGLE + Vulkan SwiftShader** WebGL2 path. There is no Three.js, TSL,
-shader generator, native Node graphics binding, or rendering benchmark.
+Reproduced with Chrome for Testing **154.0.8037.57** (macOS arm64), containing:
 
-The checked-in GLSL fragment shader sums the exact solid angles of a 4 x 4 grid on
-one cubemap face. Its mathematically correct result is:
+- **ANGLE 2.1.28731**, commit [`1ff8799c596d4fc9acea28343610b1f33650a6fa`](https://chromium.googlesource.com/angle/angle/+/1ff8799c596d4fc9acea28343610b1f33650a6fa).
+- **Vulkan SwiftShader**, commit [`5b0479bd2d15058aaa9eb490e364f920ff824a8c`](https://swiftshader.googlesource.com/SwiftShader/+/5b0479bd2d15058aaa9eb490e364f920ff824a8c), reporting Vulkan API **1.3.0**.
 
-```text
-2*pi/3 = 2.0943951023931953
+The revisions are pinned in [this Chrome release's DEPS](https://chromium.googlesource.com/chromium/src/+/154.0.8037.57/DEPS).
+The ANGLE version also appears in the installed Chrome binary. Vulkan `1.3.0`
+is the reported API version.
+
+On Chromium's **ANGLE + Vulkan SwiftShader** WebGL2 path, GLSL
+`atan(y, x)` returns `3.1415927410125732` instead of zero when **`y` is
+runtime negative zero and `x` is positive**. Constant expressions pass.
+
+The failure reproduces on an **Apple M3**. Native Apple M3 WebGL2 and native
+WebGPU controls pass.
+
+## Minimal shader
+
+[The checked-in fragment shader](shaders/atan-negative-zero.frag.glsl) draws one
+pixel into a 1 x 1 float framebuffer:
+
+```glsl
+#version 300 es
+precision highp float;
+out vec4 color;
+
+void main() {
+    // At this pixel, gl_FragCoord.xy == vec2(0.5).
+    float y = (gl_FragCoord.x - 1.0) * (gl_FragCoord.y - 0.5);
+    color = vec4(atan(y, 1.0), atan(y / 1.0),
+                 float(floatBitsToUint(y) == 0x80000000u), 1.0);
+}
 ```
 
-On the tested SwiftShader path, it returns `14.258050918579102`. The test asserts
-the correct value, so **`npm test` intentionally fails on the affected backend**.
-It must pass if that backend is fixed; it does not assert the erroneous result.
+The multiplication evaluates to `-0.0`. The third output channel verifies its
+IEEE 754 bit pattern is `0x80000000`. The result is:
+
+```text
+                         atan(y, 1)   atan(y / 1)   negative-zero bit   alpha
+SwiftShader              3.14159274   0             1                   1
+Native Apple M3 WebGL2   0            0             1                   1
+```
+
+Replacing the runtime expression with literal `-0.0` or
+`uintBitsToFloat(0x80000000u)` produces the correct result on SwiftShader.
+
+The [GLSL ES 3.00 specification](https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf)
+(section 8.1) defines two-argument arctangent using the input signs to select the
+quadrant. Section 4.5.1 permits interchanging positive and negative zeros.
+Either sign of zero is acceptable here; returning π with a positive second
+argument is the observed error. Neither input pair is `(0, 0)`.
 
 ## Install and run
 
-Requires Node.js 22+ and a supported Chromium host. Puppeteer downloads its pinned
-Chrome for Testing during installation. If your package manager blocks install
-scripts or the download was skipped, run the explicit browser installer below.
+Requires Node.js 22+ and a supported Chromium host. The browser is pinned by
+Puppeteer; install it explicitly if package install scripts were blocked.
 
 ```sh
 npm ci
 npm exec puppeteer browsers install chrome
-npm test                  # expected: 1 failure, 5 passes on the affected backend
-npm run test:controls     # expected: all 5 controls pass
-npm run test:webgl        # just the failing integral and passing workaround
-npm run test:webgpu       # both direct WGSL controls
-npm run test:hardware     # repeat the complete suite using default native WebGL
+npm test                  # affected SwiftShader: 2 failures, 6 passes
+npm run test:controls     # all 6 controls pass on this M3
+npm run test:webgl        # minimal shader, sweep, and WebGL controls
+npm run test:webgpu       # 2 native WGSL controls
+npm run test:hardware     # all 8 tests pass on native Apple M3
 ```
 
-`test:hardware` starts a separate process/browser without forcing SwiftShader.
-Chromium chooses its default backend; the printed renderer identifies it and the
-test rejects silent SwiftShader fallback. Other software implementations may still
-be chosen, so the command is not a guarantee that a hardware adapter exists.
-WebGPU controls require an available WebGPU adapter and fail clearly if one is
-unavailable; they are not silently skipped. On Linux, Chrome may require the usual
-system browser libraries and a supported native graphics driver. Run as a normal
-user with Chromium's sandbox enabled.
+Assertions always expect the correct result, so `npm test` deliberately exits
+with failure on an affected backend and should pass after a fix. GPU comparisons
+use an absolute tolerance of `0.0001` radians.
 
-`npm test` forces WebGL SwiftShader using `--use-angle=swiftshader` and
-`--enable-unsafe-swiftshader`, and verifies the actual renderer contains
-`SwiftShader`. The unsafe flag opts into this local software-rendering test; the
-browser visits only a temporary local HTTP server. The server uses an ephemeral
-port and both browsers are closed afterward. WebGPU runs in a **separate native
-browser** with `--enable-unsafe-webgpu --ignore-gpu-blocklist`: it is a comparison
-against the reported native adapter, not a claim that WebGPU SwiftShader passed.
-Forcing WebGL SwiftShader in the same browser produced no WebGPU adapter on the
-tested machine.
+`npm test` forces SwiftShader using `--use-angle=swiftshader` and
+`--enable-unsafe-swiftshader`, and checks the actual renderer. `test:hardware`
+uses the default native WebGL backend and rejects SwiftShader fallback; inspect
+the printed renderer because other software backends are not rejected.
+WebGPU uses a separate native browser with
+`--enable-unsafe-webgpu --ignore-gpu-blocklist` and reports its adapter.
+It fails clearly if no adapter is available.
 
-## Observed results
+The browsers visit only a temporary localhost server and close afterward.
+WebGL reads completed results using synchronous `readPixels`; WebGPU awaits
+`mapAsync` on the copied result buffer.
 
-Tested October 8, 2026 on Windows, Node.js `26.10.0`, Puppeteer `25.12.0`,
-Vitest `5.0.3`, Chrome for Testing `154.0.8037.57`.
+## Input range tested
 
-| Test | Result | Status |
-| --- | ---: | --- |
-| CPU `Math.atan2`, identical loop | 2.0943951023931953 | Pass |
-| SwiftShader WebGL2, GLSL `atan(y, x)` | 14.258050918579102 | **Fail** |
-| SwiftShader WebGL2, GLSL `atan(y / x)` workaround | 2.094395160675049 | Pass |
-| SwiftShader GLSL constant `atan(y, x)` values | Within 0.0001 of CPU | Pass |
-| Native WebGPU, direct WGSL `atan2(y, x)` | 2.094395160675049 | Pass |
-| Native WebGPU, direct WGSL `atan(y / x)` | 2.094395160675049 | Pass |
-| Native WebGL2, original GLSL | 2.094363212585449 | Pass |
-| Native WebGL2, quotient GLSL | 2.094363212585449 | Pass |
+The [input shader](shaders/atan-inputs.frag.glsl) reads runtime `(y, x)` pairs
+from an `RG32F` texture, with one pair per output pixel. Inputs travel from Node
+to the browser as integer bit patterns: ordinary JSON number serialization would
+change `-0` to `+0` and accidentally hide the bug.
 
-Reported SwiftShader renderer:
+The sweep tests 257 positive `x` values:
 
-```text
-ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
-```
+- Every binary32 power of two from `2^-126` through `2^127` (254 values).
+- `1.5`, binary32 `sqrt(3)`, and the largest finite binary32 value
+  (`3.4028234663852886e38`).
 
-Reported native WebGL renderer:
+For each `x`, it tests `y = -0` separately from 11 controls: `+0` and both signs
+of `2^-149` (the smallest subnormal), `2^-126` (the smallest normal), `1e-10`,
+`0.5`, and `1`. Inputs are rounded to binary32 before computing the CPU
+`Math.atan2` reference.
 
-```text
-ANGLE (NVIDIA, NVIDIA GeForce GTX 1050 (0x00001C81) Direct3D11 vs_5_0 ps_5_0, D3D11)
-```
+| M3 backend | Runtime `-0`, positive `x` | Positive zero and nonzero controls |
+| --- | --- | --- |
+| SwiftShader | **257 / 257 fail**, returning π; 257 negative-zero bits verified | 2,827 / 2,827 pass; maximum absolute error `1.073250981420415e-7` |
+| Native Apple Metal WebGL2 | 257 / 257 pass; 257 negative-zero bits verified | 2,827 / 2,827 pass; maximum absolute error `1.1920928955078068e-7` |
 
-Native WebGPU reports vendor `nvidia`, architecture `pascal`, and
-`isFallbackAdapter: false`; Chromium leaves device/description blank here.
-The test prints browser version, arguments, renderer/adapter, and numerical outputs
-on every run. The GPU assertion tolerance is `0.0001` to accommodate the small
-observed native-driver approximation error; the erroneous result exceeds it by
-more than twelve radians.
+The failure occurs only for **runtime negative zero** among these samples.
+The sweep covers the listed values; negative or zero second arguments, NaNs,
+infinities, and subnormal second arguments remain untested by this sweep.
 
-## Shader and test layout
+## Workarounds and controls
 
-- [GLSL fragment shader](shaders/solid-angle.frag.glsl): the failing 4 x 4 integral.
-- [WGSL compute shader](shaders/solid-angle.wgsl): the same algorithm, written directly.
-- [Tests](test/shaders.test.js): CPU reference, expected-correct integral,
-  quotient workaround, constant-expression control, and native WebGPU controls.
-- [Browser harness](test/browser-shaders.js): raw WebGL2 compilation/draw/readback
-  into a 1 x 1 `RGBA32F` framebuffer, and raw WebGPU compute/storage-buffer readback.
+For **positive `x`**, `atan(y / x)` avoids the observed failure. It is not a
+general substitute for `atan(y, x)`: other quadrants need correction, and extreme
+ratios can overflow or underflow.
 
-WebGL uses synchronous `readPixels` and WebGPU awaits `mapAsync` after copying the
-result. Assertions therefore inspect completed shader outputs, not submitted work.
-Neither path times frames or measures performance. The workaround tests replace
-only the checked-in arctangent expression, leaving the algorithm identical.
-
-## Why the workaround is valid
-
-The area function is:
+Canonicalizing the first argument's zero also passes this regression:
 
 ```glsl
-atan(x * y, sqrt(x * x + y * y + 1.0))
+atan(y == 0.0 ? 0.0 : y, x)
 ```
 
-Its **second argument is always at least one**, so it never encounters an undefined
-zero/zero input and needs no quadrant correction. In this particular function,
-the expression is mathematically equivalent to:
+That workaround is tested for positive `x`. Constant-expression controls and native
+[WGSL `atan2` / quotient controls](shaders/atan-negative-zero.wgsl) also pass.
+The native WGSL comparison uses a different compiler, driver, and shader stage;
+it does not test SwiftShader's WebGPU path or verify preservation of negative
+zero in that computation.
 
-```glsl
-atan((x * y) / sqrt(x * x + y * y + 1.0))
+## Environment and attribution
+
+Tested October 8, 2026: Apple M3 (10 GPU cores), macOS `27.0.1` (`26A434`),
+Node.js `26.3.0`, Puppeteer `25.12.0`, Vitest `5.0.3`,
+Chrome for Testing `154.0.8037.57` (arm64).
+
+```text
+SwiftShader WebGL:
+ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)
+
+Native WebGL:
+ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)
+
+Native WebGPU:
+vendor: apple, architecture: metal-3, isFallbackAdapter: false
 ```
 
-The quotient form avoids the demonstrated failure. This is a localized workaround,
-not a general replacement for two-argument arctangent: negative or zero second
-arguments need the full `atan2` semantics. The
-[GLSL ES specification](https://registry.khronos.org/OpenGL/specs/es/3.1/GLSL_ES_Specification_3.10.pdf)
-defines the two-argument operation; the
-[WGSL built-in specification](https://www.w3.org/TR/WGSL/#atan2-builtin)
-defines `atan2`.
-
-## Attribution and limits
-
-The failure survives removal of Three.js and shader generation. Constant-expression
-two-argument arctangent passes, while the nested-loop integral fails only on the
-tested ANGLE/SwiftShader path. This isolates the failure to that backend path, but
-**does not prove whether ANGLE translation, SPIR-V optimization, SwiftShader, or
-another driver component is responsible**. The native WebGPU control uses a
-different driver/compiler and shader stage, so its success is not evidence that
-SwiftShader's own WGSL/Vulkan path is correct.
-
-The name describes the observed renderer, not a completed upstream root-cause
-analysis. Results depend on browser/backend versions. No upstream issue was filed.
-
-The initial attempt used `vitest-environment-webgl-node` and
-`vitest-environment-webgpu-node`. Their native hardware controls passed, but
-node-webgl's bundled Windows ANGLE could not initialize SwiftShader and its Windows
-implementation does not support loading a different EGL library. Those packages
-are deliberately absent: Puppeteer reaches the actual failing backend directly.
+These results isolate the observed failure to the ANGLE/SwiftShader backend
+path. They do not establish whether ANGLE translation, SPIR-V optimization,
+SwiftShader, or another component is responsible. No upstream issue has been filed.
 
 ## License
 

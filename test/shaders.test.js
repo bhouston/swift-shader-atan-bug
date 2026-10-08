@@ -4,14 +4,18 @@ import { beforeAll, afterAll, expect, test } from 'vitest';
 import puppeteer from 'puppeteer';
 import { executeWebGL, executeWebGPU } from './browser-shaders.js';
 
-const fragment = readFileSync(new URL('../shaders/solid-angle.frag.glsl', import.meta.url), 'utf8');
-const wgsl = readFileSync(new URL('../shaders/solid-angle.wgsl', import.meta.url), 'utf8');
+const fragment = readFileSync(new URL('../shaders/atan-negative-zero.frag.glsl', import.meta.url), 'utf8');
+const wgsl = readFileSync(new URL('../shaders/atan-negative-zero.wgsl', import.meta.url), 'utf8');
 const vertex = `#version 300 es
 void main() {
     vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
     gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }`;
-const expected = 2 * Math.PI / 3;
+const inputFragment = readFileSync(new URL('../shaders/atan-inputs.frag.glsl', import.meta.url), 'utf8');
+const tolerance = 0.0001;
+// Every normal binary32 power of two, plus representative mantissas and max finite.
+const positiveX = [...Array.from({ length: 254 }, (_, i) => 2 ** (i - 126)),
+    1.5, Math.fround(Math.sqrt(3)), Math.fround(3.4028234663852886e38)];
 let server, browser, page, nativeBrowser, nativePage;
 
 beforeAll(async () => {
@@ -49,59 +53,83 @@ async function webgl(source) {
     return result.values;
 }
 
-test('control: CPU Math.atan2 solid angle equals 2*pi/3', () => {
-    const area = (x, y) => Math.atan2(x * y, Math.sqrt(x * x + y * y + 1));
-    let sum = 0;
-    for (let i = 0; i < 4; i++) {
-        for (let j = 0; j < 4; j++) {
-            const x = i * 0.5 - 1, y = 1 - j * 0.5;
-            sum += Math.abs(area(x, y) - area(x, y - 0.5) - area(x + 0.5, y) + area(x + 0.5, y - 0.5));
-        }
-    }
-    console.log('CPU total:', sum);
-    expect(Math.abs(sum - expected)).toBeLessThan(1e-12);
+test('WebGL2 runtime atan(-0, 1) returns zero', async () => {
+    const actual = await webgl(fragment);
+    console.log('Runtime result: [atan(y, 1), atan(y / 1), negative-zero bit, 1]', actual);
+    // GLSL may interchange signed zeros; this assertion accepts either sign.
+    expect(Math.abs(actual[0])).toBeLessThan(tolerance);
 });
 
-test('WebGL2 GLSL two-argument atan solid angle equals 2*pi/3', async () => {
-    const actual = (await webgl(fragment))[0];
-    expect(Math.abs(actual - expected)).toBeLessThan(0.0001);
-});
-
-test('control: WebGL2 GLSL quotient workaround equals 2*pi/3', async () => {
-    const workaround = fragment.replace(
-        'atan(x * y, sqrt(x * x + y * y + 1.0))',
-        'atan((x * y) / sqrt(x * x + y * y + 1.0))'
-    );
+test('control: WebGL2 quotient workaround returns zero', async () => {
+    const workaround = fragment.replace('atan(y, 1.0)', 'atan(y / 1.0)');
     expect(workaround).not.toBe(fragment);
-    const actual = (await webgl(workaround))[0];
-    expect(Math.abs(actual - expected)).toBeLessThan(0.0001);
+    expect(Math.abs((await webgl(workaround))[0])).toBeLessThan(tolerance);
 });
 
-test('control: constant GLSL two-argument atan values are correct', async () => {
+test('control: WebGL2 canonicalizing zero before atan returns zero', async () => {
+    const workaround = fragment.replace('atan(y, 1.0)', 'atan(y == 0.0 ? 0.0 : y, 1.0)');
+    expect(workaround).not.toBe(fragment);
+    expect(Math.abs((await webgl(workaround))[0])).toBeLessThan(tolerance);
+});
+
+test('control: constant WebGL2 negative-zero atan returns zero', async () => {
     const actual = await webgl(`#version 300 es
 precision highp float;
 out vec4 color;
 void main() {
-    color = vec4(atan(-1.0, sqrt(3.0)), atan(1.0, sqrt(3.0)),
-                 atan(-0.5, sqrt(2.25)), atan(0.5, sqrt(2.25)));
+    color = vec4(atan(-0.0, 1.0), atan(uintBitsToFloat(0x80000000u), 1.0),
+                 atan(-0.5, 1.5), atan(0.5, 1.5));
 }`);
-    const values = [-Math.PI / 6, Math.PI / 6, Math.atan2(-0.5, 1.5), Math.atan2(0.5, 1.5)];
-    values.forEach((value, i) => expect(Math.abs(actual[i] - value)).toBeLessThan(0.0001));
+    [0, 0, Math.atan2(-0.5, 1.5), Math.atan2(0.5, 1.5)].forEach((value, i) =>
+        expect(Math.abs(actual[i] - value)).toBeLessThan(tolerance));
 });
 
-test('control: WebGPU direct WGSL atan2 solid angle equals 2*pi/3', async () => {
+async function sweep(ys) {
+    const pairs = ys.flatMap(y => positiveX.map(x => [Math.fround(y), x]));
+    // page.evaluate serializes numbers and would turn -0 into +0. Send raw bits.
+    const bits = Array.from(new Uint32Array(new Float32Array(pairs.flat()).buffer));
+    const result = await page.evaluate(executeWebGL, vertex, inputFragment, bits);
+    if (process.env.SHADER_BACKEND !== 'hardware') expect(result.renderer).toMatch(/swiftshader/i);
+    else expect(result.renderer).not.toMatch(/swiftshader/i);
+    let failures = 0, maxError = 0, negativeZeros = 0;
+    const examples = [];
+    pairs.forEach(([y, x], i) => {
+        const actual = result.values[i * 4];
+        const expected = Math.atan2(y, x);
+        const error = Math.abs(actual - expected);
+        negativeZeros += result.values[i * 4 + 2];
+        maxError = Math.max(maxError, error);
+        if (!Number.isFinite(error) || error >= tolerance) {
+            failures++;
+            if (examples.length < 4) examples.push({ y: Object.is(y, -0) ? '-0' : y, x, actual, expected });
+        }
+    });
+    console.log('WebGL input sweep:', JSON.stringify({ renderer: result.renderer,
+        samples: pairs.length, failures, maxError, negativeZeros, examples }));
+    return { failures, samples: pairs.length };
+}
+
+test('WebGL2 runtime atan(-0, positive x) input sweep returns zero', async () => {
+    const result = await sweep([-0]);
+    expect(result.failures, `Incorrect results out of ${result.samples} negative-zero inputs`).toBe(0);
+});
+
+test('control: WebGL2 positive zero and nonzero input sweep', async () => {
+    const result = await sweep([0, -(2 ** -149), 2 ** -149, -(2 ** -126), 2 ** -126,
+        -1e-10, 1e-10, -0.5, 0.5, -1, 1]);
+    expect(result.failures, `Incorrect results out of ${result.samples} control inputs`).toBe(0);
+});
+
+test('control: WebGPU runtime WGSL atan2 returns zero', async () => {
     const result = await nativePage.evaluate(executeWebGPU, wgsl);
     console.log('WebGPU atan2:', JSON.stringify(result));
-    expect(Math.abs(result.value - expected)).toBeLessThan(0.0001);
+    expect(Math.abs(result.value)).toBeLessThan(tolerance);
 });
 
-test('control: WebGPU direct WGSL quotient workaround equals 2*pi/3', async () => {
-    const workaround = wgsl.replace(
-        'atan2(x * y, sqrt(x * x + y * y + 1.0))',
-        'atan((x * y) / sqrt(x * x + y * y + 1.0))'
-    );
+test('control: WebGPU runtime WGSL quotient returns zero', async () => {
+    const workaround = wgsl.replace('atan2(y, 1.0)', 'atan(y / 1.0)');
     expect(workaround).not.toBe(wgsl);
     const result = await nativePage.evaluate(executeWebGPU, workaround);
     console.log('WebGPU quotient:', JSON.stringify(result));
-    expect(Math.abs(result.value - expected)).toBeLessThan(0.0001);
+    expect(Math.abs(result.value)).toBeLessThan(tolerance);
 });
