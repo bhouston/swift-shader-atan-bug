@@ -58,27 +58,31 @@ here, but π is not when `x` is positive.
 
 ## Run
 
-Requires Node.js 22+.
+Requires Node.js 22+. Tests run in Chromium through
+[Vitest Browser Mode](https://vitest.dev/guide/browser/) with the Playwright
+provider. Each project in [`vitest.config.js`](vitest.config.js) launches its
+own Chromium with its own flags.
 
 ```sh
 npm ci
-npm exec puppeteer browsers install chrome
-npm test                # forced SwiftShader; fails on affected builds
-npm run test:hardware   # native WebGL backend; all 8 pass
+npx playwright install chromium
+npm test                # SwiftShader WebGL + native WebGPU; fails on affected builds
+npm run test:hardware   # native WebGL + native WebGPU; all 8 pass
 npm run test:controls   # controls only
 ```
 
 The tests always assert the correct result, so `npm test` fails until the bug
-is fixed. `npm test` uses `--use-angle=swiftshader --enable-unsafe-swiftshader`
-and checks that the renderer is SwiftShader. `test:hardware` fails if the
-browser falls back to SwiftShader.
+is fixed. The `swiftshader` project uses
+`--use-angle=swiftshader --enable-unsafe-swiftshader` and checks that the
+renderer is SwiftShader. The `hardware` project fails if the browser falls back
+to SwiftShader.
 
 ## Input sweep
 
 [`shaders/atan-inputs.frag.glsl`](shaders/atan-inputs.frag.glsl) reads `(y, x)`
-pairs from an `RG32F` texture. Inputs are sent as raw bit patterns because JSON
-would turn `-0` into `+0`. The sweep uses 257 positive `x` values: every binary32
-power of two from `2^-126` to `2^127`, plus `1.5`, `sqrt(3)` and the largest
+pairs from an `RG32F` texture, uploaded as a `Float32Array` so `-0` keeps its
+sign. The sweep uses 257 positive `x` values: every binary32 power of two
+from `2^-126` to `2^127`, plus `1.5`, `sqrt(3)` and the largest
 finite value. Each `x` is paired with these `y` values:
 
 - `y = -0` fails for all 257 `x` values on SwiftShader, returning π. It passes

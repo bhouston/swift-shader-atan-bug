@@ -1,8 +1,8 @@
-// Functions run inside Chromium via page.evaluate. No shader generation or graphics library.
-// Optional inputBits contains interleaved binary32 (y, x) pairs, preserving signed zero.
-export function executeWebGL(vertex, fragment, inputBits) {
+// Raw WebGL2 / WebGPU execution. No shader generation or graphics library.
+// Optional inputs is a Float32Array of interleaved (y, x) pairs.
+export function executeWebGL(vertex, fragment, inputs) {
     const canvas = document.createElement('canvas');
-    const width = inputBits ? inputBits.length / 2 : 1;
+    const width = inputs ? inputs.length / 2 : 1;
     canvas.width = width;
     canvas.height = 1;
     const gl = canvas.getContext('webgl2');
@@ -13,7 +13,7 @@ export function executeWebGL(vertex, fragment, inputBits) {
     const program = gl.createProgram();
     const shaders = [];
     const texture = gl.createTexture();
-    const inputTexture = inputBits ? gl.createTexture() : null;
+    const inputTexture = inputs ? gl.createTexture() : null;
     const framebuffer = gl.createFramebuffer();
     const vao = gl.createVertexArray();
     try {
@@ -35,11 +35,11 @@ export function executeWebGL(vertex, fragment, inputBits) {
         gl.bindVertexArray(vao);
         gl.viewport(0, 0, width, 1);
         gl.useProgram(program);
-        if (inputBits) {
+        if (inputs) {
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, inputTexture);
             gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RG32F, width, 1);
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, 1, gl.RG, gl.FLOAT, new Float32Array(new Uint32Array(inputBits).buffer));
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, 1, gl.RG, gl.FLOAT, inputs);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
             gl.uniform1i(gl.getUniformLocation(program, 'inputValues'), 0);
