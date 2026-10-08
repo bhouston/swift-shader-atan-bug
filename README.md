@@ -1,25 +1,30 @@
 # SwiftShader `atan` returns π for runtime negative zero
 
-Reproduced with Chrome for Testing **154.0.8037.57** (macOS arm64), containing:
+On Chromium's **ANGLE + Vulkan SwiftShader** WebGL2 path, GLSL `atan(y, x)`
+returns `3.1415927410125732` instead of zero when **`y` is runtime negative zero
+and `x` is positive**. Constant expressions pass.
 
-- **ANGLE 2.1.28731**, commit [`1ff8799c596d4fc9acea28343610b1f33650a6fa`](https://chromium.googlesource.com/angle/angle/+/1ff8799c596d4fc9acea28343610b1f33650a6fa).
-- **Vulkan SwiftShader**, commit [`5b0479bd2d15058aaa9eb490e364f920ff824a8c`](https://swiftshader.googlesource.com/SwiftShader/+/5b0479bd2d15058aaa9eb490e364f920ff824a8c), reporting Vulkan API **1.3.0**.
+The bug reproduces on both Apple M3 (macOS arm64) and AMD Ryzen 9 5950X +
+NVIDIA GTX 1050 (Windows x64), so it does not depend on the hardware. Native
+WebGL2 and WebGPU on both machines return the correct result.
 
-The revisions are pinned in [this Chrome release's DEPS](https://chromium.googlesource.com/chromium/src/+/154.0.8037.57/DEPS).
-The ANGLE version also appears in the installed Chrome binary. Vulkan `1.3.0`
-is the reported API version.
+## Affected versions
 
-On Chromium's **ANGLE + Vulkan SwiftShader** WebGL2 path, GLSL
-`atan(y, x)` returns `3.1415927410125732` instead of zero when **`y` is
-runtime negative zero and `x` is positive**. Constant expressions pass.
+| Component | Version |
+| --- | --- |
+| Chrome for Testing | **154.0.8037.57** (macOS arm64, Windows x64) |
+| ANGLE | 2.1.28731, [`1ff8799c`](https://chromium.googlesource.com/angle/angle/+/1ff8799c596d4fc9acea28343610b1f33650a6fa) |
+| SwiftShader | [`5b0479bd`](https://swiftshader.googlesource.com/SwiftShader/+/5b0479bd2d15058aaa9eb490e364f920ff824a8c), Vulkan 1.3.0 |
+| SwiftShader JIT | LLVM 10.0.0 (macOS arm64), Subzero (Windows x64) |
 
-The failure reproduces on an **Apple M3**. Native Apple M3 WebGL2 and native
-WebGPU controls pass.
+[This release's DEPS file](https://chromium.googlesource.com/chromium/src/+/154.0.8037.57/DEPS)
+pins these revisions. Both platforms use the same Chrome, ANGLE and SwiftShader
+revisions. Only SwiftShader's JIT backend differs, and it fails on both.
 
 ## Minimal shader
 
-[The checked-in fragment shader](shaders/atan-negative-zero.frag.glsl) draws one
-pixel into a 1 x 1 float framebuffer:
+[`shaders/atan-negative-zero.frag.glsl`](shaders/atan-negative-zero.frag.glsl)
+draws one pixel into a 1 x 1 float framebuffer:
 
 ```glsl
 #version 300 es
@@ -34,120 +39,64 @@ void main() {
 }
 ```
 
-The multiplication evaluates to `-0.0`. The third output channel verifies its
-IEEE 754 bit pattern is `0x80000000`. The result is:
+`y` evaluates to `-0.0`, and the third channel confirms the bit pattern
+`0x80000000`. The table shows each `atan` result and that bit check:
 
 ```text
-                         atan(y, 1)   atan(y / 1)   negative-zero bit   alpha
-SwiftShader              3.14159274   0             1                   1
-Native Apple M3 WebGL2   0            0             1                   1
+               atan(y, 1)   atan(y / 1)   negative-zero bit
+SwiftShader    3.14159274   0             1
+Native GPU     0            0             1
 ```
 
-Replacing the runtime expression with literal `-0.0` or
-`uintBitsToFloat(0x80000000u)` produces the correct result on SwiftShader.
+Using a literal `-0.0` or `uintBitsToFloat(0x80000000u)` instead returns the
+correct result.
 
-The [GLSL ES 3.00 specification](https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf)
-(section 8.1) defines two-argument arctangent using the input signs to select the
-quadrant. Section 4.5.1 permits interchanging positive and negative zeros.
-Either sign of zero is acceptable here; returning π with a positive second
-argument is the observed error. Neither input pair is `(0, 0)`.
+[GLSL ES 3.00](https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf)
+§8.1 uses the signs of the inputs to choose the quadrant. §4.5.1 allows positive
+and negative zero to be interchanged. Either sign of zero is therefore valid
+here, but π is not when `x` is positive.
 
-## Install and run
+## Run
 
-Requires Node.js 22+ and a supported Chromium host. The browser is pinned by
-Puppeteer; install it explicitly if package install scripts were blocked.
+Requires Node.js 22+.
 
 ```sh
 npm ci
 npm exec puppeteer browsers install chrome
-npm test                  # affected SwiftShader: 2 failures, 6 passes
-npm run test:controls     # all 6 controls pass on this M3
-npm run test:webgl        # minimal shader, sweep, and WebGL controls
-npm run test:webgpu       # 2 native WGSL controls
-npm run test:hardware     # all 8 tests pass on native Apple M3
+npm test                # forced SwiftShader; fails on affected builds
+npm run test:hardware   # native WebGL backend; all 8 pass
+npm run test:controls   # controls only
 ```
 
-Assertions always expect the correct result, so `npm test` deliberately exits
-with failure on an affected backend and should pass after a fix. GPU comparisons
-use an absolute tolerance of `0.0001` radians.
+The tests always assert the correct result, so `npm test` fails until the bug
+is fixed. `npm test` uses `--use-angle=swiftshader --enable-unsafe-swiftshader`
+and checks that the renderer is SwiftShader. `test:hardware` fails if the
+browser falls back to SwiftShader.
 
-`npm test` forces SwiftShader using `--use-angle=swiftshader` and
-`--enable-unsafe-swiftshader`, and checks the actual renderer. `test:hardware`
-uses the default native WebGL backend and rejects SwiftShader fallback; inspect
-the printed renderer because other software backends are not rejected.
-WebGPU uses a separate native browser with
-`--enable-unsafe-webgpu --ignore-gpu-blocklist` and reports its adapter.
-It fails clearly if no adapter is available.
+## Input sweep
 
-The browsers visit only a temporary localhost server and close afterward.
-WebGL reads completed results using synchronous `readPixels`; WebGPU awaits
-`mapAsync` on the copied result buffer.
+[`shaders/atan-inputs.frag.glsl`](shaders/atan-inputs.frag.glsl) reads `(y, x)`
+pairs from an `RG32F` texture. Inputs are sent as raw bit patterns because JSON
+would turn `-0` into `+0`. The sweep uses 257 positive `x` values: every binary32
+power of two from `2^-126` to `2^127`, plus `1.5`, `sqrt(3)` and the largest
+finite value. Each `x` is paired with these `y` values:
 
-## Input range tested
+- `y = -0` fails for all 257 `x` values on SwiftShader, returning π. It passes
+  on native GPUs.
+- The other `y` values pass on SwiftShader: `+0`, and ±`2^-149`, ±`2^-126`,
+  ±`1e-10`, ±`0.5` and ±`1`. Maximum error is about `1.2e-7`.
+  - **Exception:** on Windows (Subzero), `y = -2^-149` also fails for all 257
+    `x` values. Subzero flushes that subnormal to `-0`, which triggers the same
+    bug. As a result, `npm test` reports 3 failures on Windows and 2 on macOS.
 
-The [input shader](shaders/atan-inputs.frag.glsl) reads runtime `(y, x)` pairs
-from an `RG32F` texture, with one pair per output pixel. Inputs travel from Node
-to the browser as integer bit patterns: ordinary JSON number serialization would
-change `-0` to `+0` and accidentally hide the bug.
+## Workarounds
 
-The sweep tests 257 positive `x` values:
+- For **positive `x`** only: `atan(y / x)`.
+- Canonicalize the zero before the call: `atan(y == 0.0 ? 0.0 : y, x)`.
 
-- Every binary32 power of two from `2^-126` through `2^127` (254 values).
-- `1.5`, binary32 `sqrt(3)`, and the largest finite binary32 value
-  (`3.4028234663852886e38`).
-
-For each `x`, it tests `y = -0` separately from 11 controls: `+0` and both signs
-of `2^-149` (the smallest subnormal), `2^-126` (the smallest normal), `1e-10`,
-`0.5`, and `1`. Inputs are rounded to binary32 before computing the CPU
-`Math.atan2` reference.
-
-| M3 backend | Runtime `-0`, positive `x` | Positive zero and nonzero controls |
-| --- | --- | --- |
-| SwiftShader | **257 / 257 fail**, returning π; 257 negative-zero bits verified | 2,827 / 2,827 pass; maximum absolute error `1.073250981420415e-7` |
-| Native Apple Metal WebGL2 | 257 / 257 pass; 257 negative-zero bits verified | 2,827 / 2,827 pass; maximum absolute error `1.1920928955078068e-7` |
-
-The failure occurs only for **runtime negative zero** among these samples.
-The sweep covers the listed values; negative or zero second arguments, NaNs,
-infinities, and subnormal second arguments remain untested by this sweep.
-
-## Workarounds and controls
-
-For **positive `x`**, `atan(y / x)` avoids the observed failure. It is not a
-general substitute for `atan(y, x)`: other quadrants need correction, and extreme
-ratios can overflow or underflow.
-
-Canonicalizing the first argument's zero also passes this regression:
-
-```glsl
-atan(y == 0.0 ? 0.0 : y, x)
-```
-
-That workaround is tested for positive `x`. Constant-expression controls and native
-[WGSL `atan2` / quotient controls](shaders/atan-negative-zero.wgsl) also pass.
-The native WGSL comparison uses a different compiler, driver, and shader stage;
-it does not test SwiftShader's WebGPU path or verify preservation of negative
-zero in that computation.
-
-## Environment and attribution
-
-Tested October 8, 2026: Apple M3 (10 GPU cores), macOS `27.0.1` (`26A434`),
-Node.js `26.3.0`, Puppeteer `25.12.0`, Vitest `5.0.3`,
-Chrome for Testing `154.0.8037.57` (arm64).
-
-```text
-SwiftShader WebGL:
-ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)
-
-Native WebGL:
-ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)
-
-Native WebGPU:
-vendor: apple, architecture: metal-3, isFallbackAdapter: false
-```
-
-These results isolate the observed failure to the ANGLE/SwiftShader backend
-path. They do not establish whether ANGLE translation, SPIR-V optimization,
-SwiftShader, or another component is responsible. No upstream issue has been filed.
+These results narrow the failure to the ANGLE/SwiftShader path. They do not
+show which part is responsible: ANGLE's translation, the SPIR-V optimizer, or
+SwiftShader itself. No upstream issue has been filed yet.
 
 ## License
 
